@@ -2,18 +2,19 @@ package amordleq.stonedorisolation;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
-import reactor.core.Exceptions;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 import twitter4j.*;
 
 @Component
 public class TwitterClient {
 
-    private Twitter twitter;
+    private AsyncTwitterFactory twitterFactory;
+
     private int pageSize;
 
-    public TwitterClient(Twitter twitter, @Value("${stonedorisolation.pageSize}") int pageSize) {
-        this.twitter = twitter;
+    public TwitterClient(AsyncTwitterFactory twitterFactory, @Value("${stonedorisolation.pageSize}") int pageSize) {
+        this.twitterFactory = twitterFactory;
         this.pageSize = pageSize;
     }
 
@@ -26,28 +27,30 @@ public class TwitterClient {
     }
 
     public Flux<Status> searchForHashtag(String hashtag, int pageSize) {
-        //FIXME:  this should really use the async version
         Query query = new Query("#" + hashtag).count(pageSize);
 
         query.lang("en");
-        QueryResult result = searchSafely(query);
-
-        return Flux.just(result)
+        return Flux.from(search(query))
                 .expand(queryResult -> {
                     if (!queryResult.hasNext()) {
                         return Flux.empty();
                     } else {
-                        return Flux.just(searchSafely(queryResult.nextQuery()));
+                        return Flux.from(search(queryResult.nextQuery()));
                     }
                 })
                 .flatMap(queryResult -> Flux.fromIterable(queryResult.getTweets()));
     }
 
-    private QueryResult searchSafely(Query query) {
-        try {
-            return twitter.search(query);
-        } catch (TwitterException e) {
-            throw Exceptions.propagate(e);
-        }
+    private Mono<QueryResult> search(Query query) {
+        AsyncTwitter twitter = twitterFactory.getInstance();
+        return Mono.create(sink -> {
+            twitter.addListener(new TwitterAdapter(){
+                @Override
+                public void searched(QueryResult queryResult) {
+                    sink.success(queryResult);
+                }
+            });
+            twitter.search(query);
+        });
     }
 }
